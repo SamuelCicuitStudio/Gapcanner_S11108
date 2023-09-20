@@ -1,0 +1,40 @@
+To properly configure the code, follow these steps:
+
+1. Signal Polarity Alignment:
+   Before proceeding, ensure that all signals have the correct polarity relative to each other, as specified in the timing chart. Pay special attention to the following signals:
+   - ST
+   - f(CLK)
+   - SAVE_PIN
+
+2. Data Output Testing:
+   After verifying signal polarity, it's essential to test the data output from the DATA_PIN. Check if the data is being stored correctly in the designated array. 
+   use to see stored data:
+   ```c
+   void showData(uint16_t sensorData[])
+   ```
+
+3. Gap Width Measurement Parameter:
+   Next, configure the parameter for gap width measurement. Define the parameter:
+   ```c
+   #define DistanceToSensor  // Specify the distance in millimeters
+   ```
+
+4. Stepper Control Loop Parameter:
+   Finally, set the parameters for the stepper control loop:
+   - 
+     ```c
+     #define Kp 0.01 // Adjust as needed
+     #define Kd 0.01 // Adjust as needed
+     #define MAX_INTEGRAL 10  //Adjust as needed
+     ```
+   - Tolerance:
+     ```c
+     #define TOLERANCE 1 // Specify the error tolerance for stepper control in millimeters
+     ```
+5. Mouse measurment : call the CalibrationMouse(char axe); to set this parameters
+   
+     ```c
+      float xCalibrationFactor   0.0  // Adjust as needed
+      float yCalibrationFactor   0.0  // Adjust as needed
+
+By following these steps, you will ensure that the code is properly configured and organized for your application.
