@@ -72,14 +72,14 @@ MouseController mouse(myusb);
 #define ledPin          13                                // Built-in LED pin
 
 // S11108 Pin  physical Connexion
-#define CLOCK_PIN       1                                 // Clock Signal PWM Pin (FlexPWM1.1_Channel_1)
+#define CLOCK_PIN       5                                 // Clock Signal PWM Pin (FlexPWM1.1_Channel_1)
 #define TRIGG_PIN       9                                 // Trigger Signal Pin
-#define ST_PIN          42                                // ST Signal PWM Pin (FlexPWM1.1_Channel_2)
-#define EOS_PIN         5                                 // EOS Signal Pin
+#define ST_PIN          29                                // ST Signal PWM Pin (FlexPWM3.1_Channel_2)
+#define EOS_PIN         4                                 // EOS Signal Pin
 #define DATA_PIN        A0                                // Sensor Analog Output Pin
 #define BSW_PIN         GND                               // Connected to GND to set 2048 pixel reading
 
-#define SAVE_PIN        43                                // Save Signal PWM Pin (FlexPWM1.1_Channel_3),
+#define SAVE_PIN        28                                // Save Signal PWM Pin (FlexPWM3.1_Channel_1),
 #define TRIGG_SAVE_PIN  11                                // Data Storage Trigger interrupt pin linked to SAVE_PIN physically, used as a interrupt pin
 
 #define calibrationBlinkCount    3                        // Calibration blink count
