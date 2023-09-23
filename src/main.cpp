@@ -101,10 +101,8 @@ AccelStepper stepper(1, StepperStep, StepperDir);         // Create an AccelStep
 // Constants related to S11108
 #define NUM_PIXELS              2048                      // Number of pixels in the sensor
 #define PIXEL_SIZE              14.0                      // Pixel size in micrometers (14 μm)
-#define DistanceToSensor        1                         // Actual distance from the sensor to the plastic flat strips in mm
-#define photosensitivity        50.0                      // Sensor photosensitivity in V/(lx·s)
 #define integrationTime         0.010                     // Integration time in seconds (10 ms)
-#define photosensitiveAreaLength 28.672                   // Effective photosensitive area length in mm
+#define ADC_threshold           512                        // threshold adc value from ADC 10bit  around 0-1024
 uint16_t sensorData[NUM_PIXELS];                          // Sensor Data Array
 
 // Volatile variables
@@ -128,7 +126,7 @@ State currentState = IDLE;
 
 // Function Prototypes
 void controlStepper(float measuredGap);                   // Function to control the stepper motor
-float calculateGapWidth(uint16_t sensorData[], float distanceToSensor); // Function to estimate the gap width
+uint16_t calculateGapWidth(int sensorData[]); // Function to estimate the gap width in µm
 void eosUpdate();                                         // Interrupt function executed on EOS Falling edge
 void SaveUpdateInterrupt();                               // Interrupt function executed on TRIGG_SAVE Falling edge
 void SavePulseInterrupt();                                // Interrupt function executed on TRIGG Rising edge
@@ -163,7 +161,7 @@ void loop() {
   // Calculate the gap width using optical triangulation
   Serial.print("Estimated Gap Width: ");
   Serial.print(gapWidth);
-  Serial.println(" mm");
+  Serial.println(" µm");
 
   // Control the stepper motor based on the measured gap
   controlStepper(gapWidth);
@@ -199,19 +197,33 @@ void controlStepper(float measuredGap) {
   while (stepper.isRunning()) stepper.run();                // Wait until the stepper motor has finished moving
 }
 
-
 // Function to calculate the gap width between plastic flat strips
-float calculateGapWidth(uint16_t sensorData[], float distanceToSensor) {
-    uint32_t sumPixelValues = 0;                            // Calculate the average pixel value within the gap region
-    for (int i = 0; i < NUM_PIXELS; i++) {
-      sumPixelValues += sensorData[i];
-      }
-    float averagePixelValue = static_cast<float>(sumPixelValues) / NUM_PIXELS;
-    // Calculate illuminance in lux using sensor sensitivity and average pixel value
-    float illuminance = (averagePixelValue * 1000000.0) / (photosensitivity * integrationTime); // Converting from μs to s
-    // Calculate the gap width using the illuminance, pixel size, and photosensitive area length
-    float gapWidth = (2.0 * sqrt(illuminance) * PIXEL_SIZE) / photosensitiveAreaLength;
-    return gapWidth;
+uint16_t calculateGapWidth(int sensorData[]) {
+  int  centerGap = 0;
+  int i = 0;
+  
+  for (i; i < NUM_PIXELS; i++) {
+      if (sensorData[i] >= ADC_threshold) {
+      goto out1;
+    } 
+    }
+     out1:;
+  for (i; i < NUM_PIXELS; i++) {
+      if (sensorData[i] < ADC_threshold) {
+      goto out2;
+    } 
+    }
+    out2:;
+  for (i; i < NUM_PIXELS; i++) {
+      if (sensorData[i] >= ADC_threshold) {
+      goto out3;
+    } ;
+    centerGap =PIXEL_SIZE+centerGap;
+
+    }
+    out3:;
+    if(centerGap == 0)centerGap= NUM_PIXELS * PIXEL_SIZE;
+return centerGap;
 }
 
 void SavePulseInterrupt() {
@@ -349,11 +361,14 @@ void configureAndStartTimers() {
   // Configure ST pin
   pinMode(ST_PIN, OUTPUT);
   analogWriteFrequency(ST_PIN, 175);  // Set the PWM frequency to 175Hz on Pin ST
+  analogWriteResolution(10);  // Set the analog write resolution to 10 bits (1024 levels)
 
   // Configure SAVE pin
   pinMode(SAVE_PIN, OUTPUT);
   analogWriteFrequency(SAVE_PIN, 175);  // Set the PWM frequency to 175Hz on Pin SAVE
+  analogWriteResolution(10);  // Set the analog write resolution to 10 bits (1024 levels)
   Serial.println("Starting timers ST - CLOCK -SAVE");  // Print a message
+  
   // Start Timers
   analogWrite(ST_PIN, 999);  // Set a duty cycle of 95.7% on Pin ST
   analogWrite(CLOCK_PIN, 512);  // Set a duty cycle of 50% on Pin Clock
