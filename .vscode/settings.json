@@ -160,6 +160,18 @@
   "C_Cpp_Runner.showCompilationTime": false,
   "C_Cpp_Runner.useLinkTimeOptimization": false,
   "files.associations": {
-    "cmath": "cpp"
+    "cmath": "cpp",
+    "spi.h": "c",
+    "array": "c",
+    "*.tcc": "c",
+    "string": "c",
+    "vector": "c",
+    "string_view": "c",
+    "functional": "c",
+    "limits": "c",
+    "ostream": "c",
+    "ratio": "c",
+    "streambuf": "c",
+    "tuple": "c"
   }
 }
