@@ -172,6 +172,10 @@
     "ostream": "c",
     "ratio": "c",
     "streambuf": "c",
-    "tuple": "c"
+    "tuple": "c",
+    "chrono": "c",
+    "cstdint": "c",
+    "numbers": "c",
+    "utility": "c"
   }
 }

@@ -42,18 +42,21 @@ AccelStepper stepper(1, StepperStep, StepperDir);         // Create an AccelStep
 #define NUM_PIXELS              2048                      // Number of pixels in the sensor
 #define PIXEL_SIZE              14.0                      // Pixel size in micrometers (14 μm)
 #define integrationTime         0.010                     // Integration time in seconds (10 ms)
-#define ADC_threshold           512                       // threshold adc value from ADC 10bit  around 0-1024
 
 
 #define RaspiCommandHandeler    serialEvent               // SerialEvent
 #define SerialRaspiCommand      Serial4                   // serial port for commands
 
-int sensorData[NUM_PIXELS];                               // Sensor Data Array
+#define thresholdPercentage     30                        // For example, 10% of the range histeresis 
+#define alpha                  0.7                        // Adjust this value as needed for the low pass filter
+
+uint16_t sensorData[NUM_PIXELS];                          // Sensor Data Array
+uint16_t minVal = 1024; // Initialize minVal with the maximum possible value
+uint16_t maxVal = 0;          // Initialize maxVal with 0
+uint16_t filteredData[NUM_PIXELS];
 
 // Volatile variables
-volatile bool eosFlag = false;                            // End of Scan (EOS) flag
-volatile uint16_t pixelCount = 0;                         // Count of pixels
-volatile bool SaveFlag = false;                           // Save flag
+uint16_t pixelCount = 0;                         // Count of pixels
 volatile float gapWidth = 0;                              // Gap width
 
 // Setting up ADNS9500 for measurement
@@ -84,10 +87,7 @@ volatile uint16_t MANUAL_STEP_FORWARD_ = 1;
 
 // Function Prototypes
 void STEPPER_CORRECTION(float measuredGap);               // Function to control the stepper motor
-uint16_t calculateGapWidth(int sensorData[]);             // Function to estimate the gap width in µm
-void eosUpdate();                                         // Interrupt function executed on EOS Falling edge
-void SaveUpdateInterrupt();                               // Interrupt function executed on TRIGG_SAVE Falling edge
-void SavePulseInterrupt();                                // Interrupt function executed on TRIGG Rising edge
+uint16_t calculateGapWidth(uint16_t sensorData[]);        // Function to estimate the gap width in µm
 void CalibrationADNS9500(char axe);                       // Function to calibrate the mouse for measurement
 int32_t ADNS9500XData();                                  // Function to get mouse X data
 int32_t ADNS9500YData();                                  // Function to get mouse Y data
@@ -99,8 +99,8 @@ void initializeADNS9500();                                // Initialize USB Mous
 void initializeStepper();                                 // Initialize the stepper motor parameters
 void configureAndStartTimers();                           // Configure and start timers for Clock, ST, and SAVE pins
 void configureInterrupts();                               // Configure TRIGG_PIN, TRIGG_SAVE_PIN, and EOS_PIN interrupts
-
-
+void getS11108Data();                                     // function to get, filter and calculata the gap width
+void applyLowPassFilter(uint16_t sensorData[], uint16_t filteredData[]); // Function to apply a 2 order lowpass to data
 //Custom Command
 int parseValueFromCommand(String command);
 void executeCommand(String command, int parsedValue);
@@ -136,34 +136,7 @@ void setup() {
 }
 
 void loop() {
-
-  // Calculate the gap width using optical triangulation
-  Serial.print("Estimated Gap Width: ");
-  Serial.print(gapWidth);
-  Serial.println(" µm");
-
-  // Control the stepper motor based on the measured gap
-  STEPPER_CORRECTION(gapWidth);
-
-  // Control the stepper motor based on the measured gap
-  Serial.print("X Distance (mm): ");
-  Serial.println(distanceX_mm);
-  Serial.print("Y Distance (mm): ");
-  Serial.println(distanceY_mm);
-  delay(1000);
-}
-
- // EOS flag interrupt
-void eosUpdate(){
-  eosFlag = digitalRead(EOS_PIN);                           // update ESOflag
-  if(eosFlag) {                                             // decide when to reset pixelCount and turn false saveflag
-    pixelCount = 0;
-    SaveFlag = false;}
-}
-
-// TRIGG SAVE flag interrupt
-void SaveUpdateInterrupt(){
- SaveFlag = true;                                           // update Saveflag
+getS11108Data();  
 }
 
  
@@ -196,49 +169,88 @@ void STEPingStepper(int value) {
 }
 
 // Function to calculate the gap width between plastic flat strips
-uint16_t calculateGapWidth(int SensorData[]) {
- if(CMOS_WIDTH_MEASUREMENT_STATE)
- { int  centerGap = 0;
-  int i = 0;
-  
-  for (i; i < NUM_PIXELS; i++) {
-      if (sensorData[i] >= ADC_threshold) {
-      goto out1;
-    } 
-    }
-     out1:;
-  for (i; i < NUM_PIXELS; i++) {
-      if (sensorData[i] < ADC_threshold) {
-      goto out2;
-    } 
-    }
-    out2:;
-  for (i; i < NUM_PIXELS; i++) {
-      if (sensorData[i] >= ADC_threshold) {
-      goto out3;
-    } ;
-    centerGap =PIXEL_SIZE+centerGap;
+uint16_t calculateGapWidth(uint16_t SensorData[]) {
+  if(CMOS_WIDTH_MEASUREMENT_STATE){
+      // Initialize minVal and maxVal with the first element of the array
+      uint16_t minVal = SensorData[0];
+      uint16_t maxVal = SensorData[0];
 
-    }
-    out3:;
-    if(centerGap == 0)centerGap= NUM_PIXELS * PIXEL_SIZE;
-return centerGap;
-}
-else {return 0;}
-}
+      // Calculate the minimum and maximum values in SensorData[]
+      for (int i = 0; i < NUM_PIXELS; i++) {
+        if (SensorData[i] < minVal) {
+          minVal = SensorData[i];
+          }
+        if (SensorData[i] > maxVal) {
+          maxVal = SensorData[i];
+         }
+        }
 
-void SavePulseInterrupt() {
-if(!eosFlag && SaveFlag){                                   // Check for EOS_Pin  goes LOW
-    if(pixelCount <= NUM_PIXELS){                           // Read and store sensor data when a save pulse interrupt occurs
-      sensorData[pixelCount] = analogRead(DATA_PIN);
-      pixelCount++;
-    }  
-} else {
-    distanceX_mm = measureLengthX(ADNS9500XData(), xCalibrationFactor);
-    distanceY_mm = measureLengthY(ADNS9500YData(), yCalibrationFactor);
-    gapWidth = calculateGapWidth(sensorData);
-    STEPPER_CORRECTION(gapWidth);
+      // Calculate the thresholds based on a percentage of the range
+      int highThreshold = maxVal - (maxVal - minVal) * thresholdPercentage / 100;
+      int lowThreshold = minVal + (maxVal - minVal) * thresholdPercentage / 100;
+      // Initialize variables for gap width calculation
+      int gapWidth = 0;
+      bool insideGap = false;
+      int middlePixel = NUM_PIXELS / 2; // Middle pixel index
+
+      // Keep track of the gaps and their widths
+      int largestGapWidth = 0;
+      int largestGapStart = 0;
+      int currentGapStart = 0;
+      // Minimum and maximum gap widths to consider as valid gaps
+      int minValidGapWidth = 71; // Minimum gap width in pixels
+      int maxValidGapWidth = 428; // Maximum gap width in pixels
+
+      // Filter out gaps smaller than the minimum gap width
+      for (int i = 0; i < NUM_PIXELS; i++) {
+        if (SensorData[i] < lowThreshold) {
+          gapWidth++; // Increment the gap width counter
+        } else if (gapWidth < minValidGapWidth) {
+            // Replace values within smaller gaps with max or min values
+            if (SensorData[i] > highThreshold) {
+                // Replace with maximum value for positive gap
+                SensorData[i] = maxVal;
+            } else {
+                // Replace with minimum value for negative gap
+                SensorData[i] = minVal;
+            }
+        } else {
+            gapWidth = 0; // Reset gap width if a valid gap is encountered
+        }
+      }
+
+       // Iterate through SensorData to find edges and calculate gaps
+      for (int i = 0; i < NUM_PIXELS; i++) {
+         if (SensorData[i] > highThreshold && !insideGap) {
+            // Rising edge detected (beginning of a strip or gap)
+            insideGap = true;
+            currentGapStart = i;
+         } else if (SensorData[i] < lowThreshold && insideGap) {
+            // Falling edge detected (beginning of the gap)
+             gapWidth++; // Increment the gap width counter
+         } else if (SensorData[i] > highThreshold && insideGap) {
+            // Second rising edge detected (end of a strip or gap)
+            insideGap = false;
+            if (gapWidth > largestGapWidth && gapWidth >= minValidGapWidth && gapWidth <= maxValidGapWidth) {
+                largestGapWidth = gapWidth;
+                largestGapStart = currentGapStart;
+            }
+            gapWidth = 0; // Reset gap width
+         }
+       }
+
+       // Calculate the middle gap length in micrometers (µm)
+       int pixelSize = 14; // 14 µm per pixel
+       int middleGapLength = 0;
+
+       if (largestGapWidth > 0) {
+          middleGapLength = largestGapWidth * pixelSize;
+       }
+
+       return middleGapLength; // Return the middle gap length in µm
 }
+else return 0;
+
 }
 
 void CalibrationADNS9500(char axe) {
@@ -315,24 +327,20 @@ void configureAndStartTimers() {
   // Start Timers
   analogWrite(ST_PIN, 999);  // Set a duty cycle of 95.7% on Pin ST
   analogWrite(CLOCK_PIN, 512);  // Set a duty cycle of 50% on Pin Clock
-  analogWrite(SAVE_PIN, 1022);  // Set a duty cycle of 99.81% on Pin SAVE
+  analogWrite(SAVE_PIN, 999);  // Set a duty cycle of 99.81% on Pin SAVE
 }
 
 void configureInterrupts() {
   Serial.println("Interrupt pin Configuration....");  // Print a message
   // Configure TRIGG_PIN Pin
   pinMode(TRIGG_PIN, INPUT_PULLUP);  // Configure TRIGG_PIN as INPUT with an internal pull-up resistor
-  attachInterrupt(digitalPinToInterrupt(TRIGG_PIN), SavePulseInterrupt, RISING);  // Attach clock pulse interrupt for the rising edge
-
+  
   // Attach Save Pulse Interrupt
   pinMode(TRIGG_SAVE_PIN, INPUT);  // Configure TRIGG_SAVE_PIN as INPUT
-  attachInterrupt(digitalPinToInterrupt(TRIGG_SAVE_PIN), SaveUpdateInterrupt, FALLING);  // Attach clock pulse interrupt for the falling edge
-
+  
   // Attach EOS Pulse Interrupt
   pinMode(EOS_PIN, INPUT);  // Configure EOS_PIN as INPUT
-  attachInterrupt(digitalPinToInterrupt(EOS_PIN), eosUpdate, CHANGE);  // Attach clock pulse interrupt for any change
-  Serial.println("nterrupt pin Configuration done!!!!!!!!");  // Print a message
-}
+  }
 // Function to parse the value from a command
 int parseValueFromCommand(String command) {
   int parsedValue = 0; // Default value if parsing fails
@@ -454,6 +462,60 @@ void RaspiCommandHandeler() {
     String command = SerialRaspiCommand.readStringUntil('\n');    // Read the command from Serial input
     int parsedValue = parseValueFromCommand(command);// Parse and execute the command
     executeCommand(command, parsedValue);
+  }
+}
+
+void getS11108Data(){
+  pixelCount =0;
+ while(!digitalRead(TRIGG_SAVE_PIN)){
+  while(digitalRead(TRIGG_PIN)){
+ ///Serial.print("video =");
+ //Serial.println(analogRead(DATA_PIN));
+ pixelCount++;
+ if (pixelCount > 87 && pixelCount <= NUM_PIXELS + 87) {
+    sensorData[pixelCount - 88] = analogRead(DATA_PIN);
+    //Serial.println(sensorData[pixelCount - 88]);
+    
+  };
+   if (pixelCount > NUM_PIXELS + 87)break;
+   };break;
+}
+ //showData(sensorData);
+applyLowPassFilter(sensorData, filteredData);
+//showData(filteredData);
+ gapWidth = calculateGapWidth(filteredData);
+ Serial.print("Estimated Gap Width: ");
+ Serial.print(gapWidth);
+ Serial.println(" µm");
+ delay(100);
+}
+
+void applyLowPassFilter(uint16_t sensorData[], uint16_t filteredData[]) {
+  if (NUM_PIXELS == 0) {
+    // Handle the case of an empty array
+    return;
+  }
+
+  // Initialize the filtered data with the first element of the input data
+  filteredData[0] = sensorData[0];
+
+  // Initialize previous values for the filter
+  float prevFilteredData = sensorData[0];
+  float prev2FilteredData = sensorData[0];
+
+  // Apply the second-order low-pass filter
+  for (size_t i = 1; i < NUM_PIXELS; i++) {
+    float input = sensorData[i];
+
+    // Calculate the filtered value using the second-order low-pass filter formula
+    float filteredValue = alpha * input + (1 - alpha) * (2 * prevFilteredData - prev2FilteredData);
+
+    // Store the filtered value in the output array
+    filteredData[i] = static_cast<uint16_t>(filteredValue);
+
+    // Update previous values for the next iteration
+    prev2FilteredData = prevFilteredData;
+    prevFilteredData = filteredValue;
   }
 }
 
