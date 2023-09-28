@@ -24,8 +24,8 @@ uint16_t sensorData[NUM_PIXELS];                          // Sensor Data Array
 
 uint16_t minVal = 1024; // Initialize minVal with the maximum possible value
 uint16_t maxVal = 0;          // Initialize maxVal with 0
-#define thresholdPercentage  30; // For example, 10% of the range
-#define alpha  0.7;  // Adjust this value as needed
+#define thresholdPercentage  30 // For example, 10% of the range
+#define alpha  0.7  // Adjust this value as needed
 uint16_t filteredData[NUM_PIXELS];
 #define DefaultSampling 200
 uint8_t sampling = DefaultSampling;
@@ -36,7 +36,7 @@ void showData(uint16_t sensorData[]);                     // Function to show st
 void configureAndStartTimers();                           // Configure and start timers for Clock, ST, and SAVE pins
 void configureInterrupts();                               // Configure TRIGG_PIN, TRIGG_SAVE_PIN, and EOS_PIN interrupts
 void getS11108Data();
-
+void applyLowPassFilter(uint16_t sensorData[],uint16_t filteredData[]);
 
 
 void setup() {
@@ -216,7 +216,7 @@ if(sampling == 0){//showData(filteredData);
  delay(500);}
 }
 
-void applyLowPassFilter(uint16_t sensorData[], uint16_t filteredData[], float alpha) {
+void applyLowPassFilter(uint16_t sensorData[], uint16_t filteredData[]) {
   if (NUM_PIXELS == 0) {
     // Handle the case of an empty array
     return;
