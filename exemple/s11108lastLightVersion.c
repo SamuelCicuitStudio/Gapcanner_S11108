@@ -18,15 +18,17 @@
 uint16_t sensorData[NUM_PIXELS];                          // Sensor Data Array
 
 // Volatile variables
-volatile uint16_t pixelCount = 0;                         // Count of pixels
-volatile bool SaveFlag = false;                           // Save flag
-volatile uint16_t gapWidth = 0;                              // Gap width
+ uint16_t pixelCount = 0;                         // Count of pixels
+ bool SaveFlag = false;                           // Save flag
+ uint64_t gapWidth = 0;                              // Gap width
 
 uint16_t minVal = 1024; // Initialize minVal with the maximum possible value
 uint16_t maxVal = 0;          // Initialize maxVal with 0
 #define thresholdPercentage  30; // For example, 10% of the range
 #define alpha  0.7;  // Adjust this value as needed
 uint16_t filteredData[NUM_PIXELS];
+#define DefaultSampling 200
+uint8_t sampling = DefaultSampling;
 
 // Function Prototypes
 uint16_t calculateGapWidth(uint16_t sensorData[]);        // Function to estimate the gap width in µm
@@ -48,7 +50,6 @@ void setup() {
 
 void loop() {
  getS11108Data();
-
 }
 
 // Function to calculate the gap width between plastic flat strips
@@ -67,73 +68,75 @@ uint16_t calculateGapWidth(uint16_t SensorData[]) {
         }
     }
 
-    // Calculate the thresholds based on a percentage of the range
-    
+
 
     int highThreshold = maxVal - (maxVal - minVal) * thresholdPercentage / 100;
     int lowThreshold = minVal + (maxVal - minVal) * thresholdPercentage / 100;
 
     // Initialize variables for gap width calculation
-    int gapWidth = 0;
-    bool insideGap = false;
-    int middlePixel = NUM_PIXELS / 2; // Middle pixel index
 
-    // Keep track of the gaps and their widths
-    int largestGapWidth = 0;
-    int largestGapStart = 0;
-    int currentGapStart = 0;
-
-    // Minimum and maximum gap widths to consider as valid gaps
+    bool firstRisingEdgeDetected = false; // Flag to track the first rising edge
+    int firstRisingEdgeIndex = 0; // Index of the first rising edge
+     int secondRisingEdgeIndex = 0; // Index of the first rising edge
+    int startingPoint;
+   // Minimum and maximum gap widths to consider as valid gaps
     int minValidGapWidth = 71; // Minimum gap width in pixels
     int maxValidGapWidth = 428; // Maximum gap width in pixels
 
-    // Filter out gaps smaller than the minimum gap width
+
+    // Iterate through SensorData
     for (int i = 0; i < NUM_PIXELS; i++) {
-        if (SensorData[i] < lowThreshold) {
-            gapWidth++; // Increment the gap width counter
-        } else if (gapWidth < minValidGapWidth) {
-            // Replace values within smaller gaps with max or min values
-            if (SensorData[i] > highThreshold) {
-                // Replace with maximum value for positive gap
-                SensorData[i] = maxVal;
-            } else {
-                // Replace with minimum value for negative gap
-                SensorData[i] = minVal;
-            }
+        if (!firstRisingEdgeDetected && SensorData[i] < lowThreshold && SensorData[i+1] > highThreshold) {
+            // First rising edge detected
+            firstRisingEdgeDetected = true;
+            firstRisingEdgeIndex = i;
+        };
+         if (firstRisingEdgeDetected && SensorData[i] < lowThreshold && SensorData[i+1] > highThreshold) {
+            // Second rising edge detected
+            secondRisingEdgeIndex = i;
+             startingPoint = secondRisingEdgeIndex - 100;
+            
+        }
+    }
+          if(startingPoint == 0) return 0;
+    // Initialize variables to count low pixels to the left and right
+    int lowPixelsLeft = 0;
+    int lowPixelsRight = 0;
+
+    // Initialize flag to track if we have encountered the first high pixel
+    bool firstHighPixelEncountered = false;
+    // Iterate through SensorData starting from the middle
+    for (int i = startingPoint; i >= 0; i--) {
+        if (SensorData[i] > highThreshold) {
+            // High pixel value detected
+            firstHighPixelEncountered = true;
+            break; // Exit the loop
         } else {
-            gapWidth = 0; // Reset gap width if a valid gap is encountered
+            // Low pixel value detected
+            lowPixelsLeft++;
         }
     }
 
-    // Iterate through SensorData to find edges and calculate gaps
-    for (int i = 0; i < NUM_PIXELS; i++) {
-        if (SensorData[i] > highThreshold && !insideGap) {
-            // Rising edge detected (beginning of a strip or gap)
-            insideGap = true;
-            currentGapStart = i;
-        } else if (SensorData[i] < lowThreshold && insideGap) {
-            // Falling edge detected (beginning of the gap)
-            gapWidth++; // Increment the gap width counter
-        } else if (SensorData[i] > highThreshold && insideGap) {
-            // Second rising edge detected (end of a strip or gap)
-            insideGap = false;
-            if (gapWidth > largestGapWidth && gapWidth >= minValidGapWidth && gapWidth <= maxValidGapWidth) {
-                largestGapWidth = gapWidth;
-                largestGapStart = currentGapStart;
-            }
-            gapWidth = 0; // Reset gap width
+    // Reset flag for the right side
+    firstHighPixelEncountered = false;
+
+    // Iterate through SensorData starting from the middle
+    for (int i = startingPoint + 1; i < NUM_PIXELS; i++) {
+        if (SensorData[i] > highThreshold) {
+            // High pixel value detected
+            firstHighPixelEncountered = true;
+            break; // Exit the loop
+        } else {
+            // Low pixel value detected
+            lowPixelsRight++;
         }
     }
 
-    // Calculate the middle gap length in micrometers (µm)
+    // Calculate the gap width in micrometers (µm)
     int pixelSize = 14; // 14 µm per pixel
-    int middleGapLength = 0;
+    int gapWidthMicrometers = (lowPixelsLeft + lowPixelsRight) * pixelSize;
 
-    if (largestGapWidth > 0) {
-        middleGapLength = largestGapWidth * pixelSize;
-    }
-
-    return middleGapLength; // Return the middle gap length in µm
+    return gapWidthMicrometers; // Return the gap width in µm
 }
 
 void showData(uint16_t sensorData[]) {
@@ -201,13 +204,16 @@ void getS11108Data(){
    };break;
 }
  //showData(sensorData);
-applyLowPassFilter(sensorData, filteredData, alpha);
-//showData(filteredData);
- gapWidth = calculateGapWidth(filteredData);
+applyLowPassFilter(sensorData, filteredData);
+ gapWidth += calculateGapWidth(filteredData);
+ sampling--;
+if(sampling == 0){//showData(filteredData);
  Serial.print("Estimated Gap Width: ");
- Serial.print(gapWidth);
+ Serial.print((float)(gapWidth/DefaultSampling));
  Serial.println(" µm");
- delay(100);
+ gapWidth = 0;
+ sampling = DefaultSampling;
+ delay(500);}
 }
 
 void applyLowPassFilter(uint16_t sensorData[], uint16_t filteredData[], float alpha) {
