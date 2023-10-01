@@ -9,7 +9,6 @@
 #define BSW_PIN         GND                               // Connected to GND to set 2048 pixel reading
 
 #define SAVE_PIN        28                                // Save Signal PWM Pin (FlexPWM3.1_Channel_1),
-#define TRIGG_SAVE_PIN  11                                // Data Storage Trigger interrupt pin linked to SAVE_PIN physically, used as a interrupt pin
 
 // Constants Related to S11108
 #define NUM_PIXELS              2048                      // Number of pixels in the sensor
@@ -184,10 +183,7 @@ void configureInterrupts() {
   //Serial.println("Interrupt pin Configuration....");  // Print a message
   // Configure TRIGG_PIN Pin
   pinMode(TRIGG_PIN, INPUT_PULLUP);  // Configure TRIGG_PIN as INPUT with an internal pull-up resistor
- 
-  // Attach Save Pulse Interrupt
-  pinMode(TRIGG_SAVE_PIN, INPUT);  // Configure TRIGG_SAVE_PIN as INPUT
-  
+   
   // Attach EOS Pulse Interrupt
   pinMode(EOS_PIN, INPUT);  // Configure EOS_PIN as INPUT
   }
@@ -195,7 +191,7 @@ void configureInterrupts() {
 void getS11108Data(){
   pixelCount =0;
   gapWidth=0;
-  while(!digitalRead(TRIGG_SAVE_PIN)){
+  while(!digitalRead(SAVE_PIN)){
     while(digitalRead(TRIGG_PIN)){
       ///Serial.print("video =");
       //Serial.println(analogRead(DATA_PIN));
