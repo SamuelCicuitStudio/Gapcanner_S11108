@@ -177,5 +177,6 @@
     "cstdint": "c",
     "numbers": "c",
     "utility": "c"
-  }
+  },
+  "C_Cpp_Runner.msvcSecureNoWarnings": false
 }

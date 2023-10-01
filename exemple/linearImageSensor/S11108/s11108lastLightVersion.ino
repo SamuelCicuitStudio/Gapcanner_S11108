@@ -20,7 +20,8 @@ uint16_t sensorData[NUM_PIXELS];                          // Sensor Data Array
 // Volatile variables
  uint16_t pixelCount = 0;                         // Count of pixels
  bool SaveFlag = false;                           // Save flag
- uint64_t gapWidth = 0;                              // Gap width
+ float gapWidth = 0;                              // Gap width
+
 
 uint16_t minVal = 1024; // Initialize minVal with the maximum possible value
 uint16_t maxVal = 0;          // Initialize maxVal with 0
@@ -50,6 +51,7 @@ void setup() {
 
 void loop() {
  getS11108Data();
+ delay(1000);
 }
 
 // Function to calculate the gap width between plastic flat strips
@@ -78,7 +80,7 @@ uint16_t calculateGapWidth(uint16_t SensorData[]) {
     bool firstRisingEdgeDetected = false; // Flag to track the first rising edge
     int firstRisingEdgeIndex = 0; // Index of the first rising edge
      int secondRisingEdgeIndex = 0; // Index of the first rising edge
-    int startingPoint;
+    int startingPoint=0;
    // Minimum and maximum gap widths to consider as valid gaps
     int minValidGapWidth = 71; // Minimum gap width in pixels
     int maxValidGapWidth = 428; // Maximum gap width in pixels
@@ -93,8 +95,11 @@ uint16_t calculateGapWidth(uint16_t SensorData[]) {
         };
          if (firstRisingEdgeDetected && SensorData[i] < lowThreshold && SensorData[i+1] > highThreshold) {
             // Second rising edge detected
-            secondRisingEdgeIndex = i;
+             secondRisingEdgeIndex = i;
              startingPoint = secondRisingEdgeIndex - 100;
+             Serial.print("startingPoint:");
+             Serial.println(startingPoint);
+
             
         }
     }
@@ -134,7 +139,7 @@ uint16_t calculateGapWidth(uint16_t SensorData[]) {
 
     // Calculate the gap width in micrometers (µm)
     int pixelSize = 14; // 14 µm per pixel
-    int gapWidthMicrometers = (lowPixelsLeft + lowPixelsRight) * pixelSize;
+    int gapWidthMicrometers =( (lowPixelsLeft + lowPixelsRight) * pixelSize)-600;
 
     return gapWidthMicrometers; // Return the gap width in µm
 }
@@ -190,30 +195,29 @@ void configureInterrupts() {
 
 void getS11108Data(){
   pixelCount =0;
- while(!digitalRead(TRIGG_SAVE_PIN)){
-  while(digitalRead(TRIGG_PIN)){
- ///Serial.print("video =");
- //Serial.println(analogRead(DATA_PIN));
- pixelCount++;
- if (pixelCount > 87 && pixelCount <= NUM_PIXELS + 87) {
-    sensorData[pixelCount - 88] = analogRead(DATA_PIN);
-    //Serial.println(sensorData[pixelCount - 88]);
-    
-  };
-   if (pixelCount > NUM_PIXELS + 87)break;
-   };break;
-}
- //showData(sensorData);
-applyLowPassFilter(sensorData, filteredData);
- gapWidth += calculateGapWidth(filteredData);
- sampling--;
-if(sampling == 0){//showData(filteredData);
- Serial.print("Estimated Gap Width: ");
- Serial.print((float)(gapWidth/DefaultSampling));
- Serial.println(" µm");
- gapWidth = 0;
- sampling = DefaultSampling;
- delay(500);}
+  gapWidth=0;
+  while(!digitalRead(TRIGG_SAVE_PIN)){
+    while(digitalRead(TRIGG_PIN)){
+      ///Serial.print("video =");
+      //Serial.println(analogRead(DATA_PIN));
+      pixelCount++;
+      if (pixelCount > 87 && pixelCount <= NUM_PIXELS + 87) {
+        sensorData[pixelCount - 88] = analogRead(DATA_PIN);
+        //Serial.println(sensorData[pixelCount - 88]);
+        };
+      if (pixelCount > NUM_PIXELS + 87){ 
+        //showData(sensorData);
+        applyLowPassFilter(sensorData, filteredData);
+        gapWidth = calculateGapWidth(filteredData);
+        if(gapWidth>0){
+          Serial.print("Estimated Gap Width: ");
+          Serial.print(gapWidth);
+          Serial.println(" µm");
+        } ;break;
+      }
+    };break;
+  }
+
 }
 
 void applyLowPassFilter(uint16_t sensorData[], uint16_t filteredData[]) {

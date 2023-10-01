@@ -1,9 +1,7 @@
 
-
 #include <Arduino.h>
 #include <AccelStepper.h>
-#include <cmath>
-
+#include "RegisterADNS9500.h"
 
 
 // Stepper  Pin  physical Connexion
@@ -23,10 +21,17 @@
 #define BSW_PIN         GND                               // Connected to GND to set 2048 pixel reading
 
 #define SAVE_PIN        28                                // Save Signal PWM Pin (FlexPWM3.1_Channel_1),
-#define TRIGG_SAVE_PIN  11                                // Data Storage Trigger interrupt pin linked to SAVE_PIN physically, used as a interrupt pin
+#define TRIGG_SAVE_PIN  24                                // Data Storage Trigger interrupt pin linked to SAVE_PIN physically, used as a interrupt pin
 
 #define calibrationBlinkCount    3                        // Calibration blink count
 #define calibrationBlinkDuration 300                      // Blink delay in milliseconds
+
+//ADNS-9500 PINS
+const uint8_t Movement_Pin = 25;   //Connected to Motion Pin of ADNS-9500
+const uint8_t CS_Pin = 10;         //Connected to NCS pin ADNS-9500
+#define SCK  13                    //Connected to SCLK pin of the ADNS-9500
+#define MOSI 11                    //Connected to MOSI pin of the ADNS-9500
+#define MISO 12                    //Connected to MISO pin of the ADNS-9500
 
 // Constants for PI control stepper
 #define KP                      0.5                       // Proportional gain
@@ -61,12 +66,6 @@ uint64_t gapWidth = 0;                              // Gap width
 #define DefaultSampling 200
 uint8_t sampling = DefaultSampling;
 
-// Setting up ADNS9500 for measurement
-unsigned long lastButtonPressTime = 0;
-float xCalibrationFactor = 0.0;                           // Calibration factor for X-axis
-float yCalibrationFactor = 0.0;                           // Calibration factor for Y-axis
-volatile  float distanceX_mm = 0;                         // Distance in X-axis (in mm)
-volatile  float distanceY_mm = 0;                         // Distance in Y-axis (in mm)
 
 enum State {
   IDLE,
@@ -90,19 +89,15 @@ volatile uint16_t MANUAL_STEP_FORWARD_ = 1;
 // Function Prototypes
 void STEPPER_CORRECTION(float measuredGap);               // Function to control the stepper motor
 uint16_t calculateGapWidth(uint16_t sensorData[]);        // Function to estimate the gap width in µm
-void CalibrationADNS9500(char axe);                       // Function to calibrate the mouse for measurement
-int32_t ADNS9500XData();                                  // Function to get mouse X data
-int32_t ADNS9500YData();                                  // Function to get mouse Y data
-float measureLengthX(int32_t xADNS9500Data, float xCalibrationFactor); // Function to calculate X distance in mm
-float measureLengthY(int32_t yADNS9500Data, float yCalibrationFactor); // Function to calculate Y distance in mm
 void blinkLED(int count);                                 // Function to blink LED
 void showData(uint16_t sensorData[]);                     // Function to show stored sensor data
-void initializeADNS9500();                                // Initialize USB Mouse & Calibration related pins and USB Host
 void initializeStepper();                                 // Initialize the stepper motor parameters
 void configureAndStartTimers();                           // Configure and start timers for Clock, ST, and SAVE pins
 void configureInterrupts();                               // Configure TRIGG_PIN, TRIGG_SAVE_PIN, and EOS_PIN interrupts
 void getS11108Data();                                     // function to get, filter and calculata the gap width
 void applyLowPassFilter(uint16_t sensorData[], uint16_t filteredData[]); // Function to apply a 2 order lowpass to data
+int ADNS9500Data();
+
 //Custom Command
 int parseValueFromCommand(String command);
 void executeCommand(String command, int parsedValue);
@@ -121,7 +116,7 @@ int  MANUAL_STEP_BACKWARDS(uint16_t x){MANUAL_STEP_BACKWARDS_ = x;return 1;}//Pe
 int  SET_TARGET_GAP_WIDTH(uint16_t x){SET_TARGET_GAP_WIDTH_ = x;return 1;}  //Sets the required width of the gap between the pieces of tape as %arg1% mm. 
 int  SET_GAP_FORWARD_TOLERANCE(uint16_t x) {SET_GAP_FORWARD_TOLERANCE_ = x;return 1;}//Sets the positive tolerance for the gap. If MEASURED_GAP - TARGET_GAP > FORWARD_TOLERANCE this means the gap is too large and means the stepper needs to make backwards adjustments.
 int  SET_GAP_BACKWARDS_TOLERANCE(uint16_t x) {SET_GAP_BACKWARDS_TOLERANCE_ = x;return 1;}//Sets the negative tolerance for the gap. If TARGET_GAP - MEASURED_GAP > BACKWARD_TOLERANCE this means the gap is too small and means the stepper needs to make forwards adjustments.
-int  GET_LENGTH_MEASURED(){measureLengthX(ADNS9500XData(), xCalibrationFactor);return 1;}//Prompts the teensy board to send the length of tape that has been measured over the ADNS-9500 in number of CM.
+int  GET_LENGTH_MEASURED(){ADNS9500Data();return 1;}//Prompts the teensy board to send the length of tape that has been measured over the ADNS-9500 in number of CM.
 int  GET_WIDTH_MEASURED(){calculateGapWidth(sensorData);return 1;}          //Prompts the teensy board to send the distance of the width which has been measured over the S11108 CMOS Sensor in um.
 
 
@@ -171,7 +166,6 @@ void STEPingStepper(int value) {
 }
 
 // Function to calculate the gap width between plastic flat strips
-// Function to calculate the gap width
 uint16_t calculateGapWidth(uint16_t SensorData[]) {
     // Initialize minVal and maxVal with the first element of the array
     uint16_t minVal = SensorData[0];
@@ -199,8 +193,8 @@ uint16_t calculateGapWidth(uint16_t SensorData[]) {
      int secondRisingEdgeIndex = 0; // Index of the first rising edge
     int16_t startingPoint = 0;
    // Minimum and maximum gap widths to consider as valid gaps
-    int minValidGapWidth = 71; // Minimum gap width in pixels
-    int maxValidGapWidth = 428; // Maximum gap width in pixels
+    #define minValidGapWidth  71 // Minimum gap width in pixels
+    #define maxValidGapWidth 428 // Maximum gap width in pixels
 
 
     // Iterate through SensorData
@@ -259,30 +253,6 @@ uint16_t calculateGapWidth(uint16_t SensorData[]) {
     return gapWidthMicrometers; // Return the gap width in µm
 }
 
-void CalibrationADNS9500(char axe) {
-
-}
-
-int32_t ADNS9500XData() {
-
-}
-
-int32_t ADNS9500YData() {
-
-}
-
-float measureLengthX(int32_t xMouseData, float xCalibrationFactor) {
-  if(OPTICAL_LENGTH_MEASUREMENT_STATE)
-  {return xMouseData * xCalibrationFactor;}
-  else {return 0;}
-}
-
-float measureLengthY(int32_t yMouseData, float yCalibrationFactor) {
-  if(OPTICAL_LENGTH_MEASUREMENT_STATE)
-  {return yMouseData * yCalibrationFactor;}
-  else {return 0;}
-}
-
 void blinkLED(int count) {
   for (int i = 0; i < count; i++) {
     digitalWrite(ledPin, HIGH);
@@ -297,11 +267,6 @@ void showData(uint16_t sensorData[]) {
   for (int i = 0; i < 2049; i++) {
     Serial.println(sensorData[i]);
   }
-}
-
-void initializeADNS9500() {
-  Serial.println("initializing ADNS9500...");  // Print a message
-  Serial.println("initializing ADNS9500 done!!!!!");  // Print a message
 }
 
 void initializeStepper() {
@@ -528,3 +493,7 @@ void applyLowPassFilter(uint16_t sensorData[], uint16_t filteredData[]) {
   }
 }
 
+int ADNS9500Data(){
+  if(OPTICAL_LENGTH_MEASUREMENT_STATE) return getDistance();
+  return 0;
+}
