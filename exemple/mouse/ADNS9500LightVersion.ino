@@ -62,10 +62,6 @@ extern prog_uchar firmware_data[];
 
 void setup() {
   Serial.begin(9600);
-  
-  lcd.begin(20, 4);
-  lcd.clear();
-  
   pinMode (ncs, OUTPUT);
   
   attachInterrupt(0, UpdatePointer, FALLING);

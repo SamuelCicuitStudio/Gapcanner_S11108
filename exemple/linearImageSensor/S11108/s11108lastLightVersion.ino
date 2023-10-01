@@ -19,7 +19,6 @@ uint16_t sensorData[NUM_PIXELS];                          // Sensor Data Array
 
 // Volatile variables
  uint16_t pixelCount = 0;                         // Count of pixels
- bool SaveFlag = false;                           // Save flag
  float gapWidth = 0;                              // Gap width
 
 

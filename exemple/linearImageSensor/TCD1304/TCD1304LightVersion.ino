@@ -19,7 +19,6 @@ uint16_t filteredData[NUM_PIXELS];
 
 // Volatile variables
 volatile uint16_t pixelCount = 0; // Count of pixels
-volatile bool SaveFlag = false;   // Save flag
 volatile float gapWidth = 0;      // Gap width in µm (micrometers)
 
 // Variables for threshold and filtering
