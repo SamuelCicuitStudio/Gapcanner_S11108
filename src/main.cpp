@@ -2,7 +2,12 @@
 #include <Arduino.h>
 #include <AccelStepper.h>
 #include "RegisterADNS9500.h"
+#include "MegunoLink.h"
+#include "Filter.h"
 
+// Exponential filters for data smoothing
+ExponentialFilter<long> ADCFilter(10, 0);
+ExponentialFilter<long> ADCFilter1(3, 0);
 
 // Stepper  Pin  physical Connexion
 #define StepperDir      3                                 // Stepper Direction Pin
@@ -19,7 +24,6 @@
 #define EOS_PIN         4                                 // EOS Signal Pin
 #define DATA_PIN        A0                                // Sensor Analog Output Pin
 #define BSW_PIN         GND                               // Connected to GND to set 2048 pixel reading
-
 #define SAVE_PIN        28                                // Save Signal PWM Pin (FlexPWM3.1_Channel_1),
 #define TRIGG_SAVE_PIN  24                                // Data Storage Trigger interrupt pin linked to SAVE_PIN physically, used as a interrupt pin
 
@@ -52,19 +56,20 @@ AccelStepper stepper(1, StepperStep, StepperDir);         // Create an AccelStep
 #define RaspiCommandHandeler    serialEvent               // SerialEvent
 #define SerialRaspiCommand      Serial4                   // serial port for commands
 
-#define thresholdPercentage     30                        // For example, 10% of the range histeresis 
-#define alpha                  0.7                        // Adjust this value as needed for the low pass filter
+// S11108 System parameters
+#define thresholdPercentage     30    // Percentage of the range for hysteresis
+#define steadyError             50    // Output error
+bool IsLonger = false;              // Parameter to determine if the strip width is longer than the sensor width
 
-uint16_t sensorData[NUM_PIXELS];                          // Sensor Data Array
-uint16_t minVal = 1024; // Initialize minVal with the maximum possible value
-uint16_t maxVal = 0;          // Initialize maxVal with 0
-uint16_t filteredData[NUM_PIXELS];
+// Variables
+uint16_t pixelCount = 0;            // Count of pixels
+uint16_t PrevgapWidth = 0;          // Previous gap width
 
-// Volatile variables
-uint16_t pixelCount = 0;                         // Count of pixels
-uint64_t gapWidth = 0;                              // Gap width
-#define DefaultSampling 200
-uint8_t sampling = DefaultSampling;
+// Filtered data array
+uint16_t discretData[NUM_PIXELS];    // Array to store filtered data
+
+// Sensor Data Array
+uint16_t sensorData[NUM_PIXELS];     // Array to store sensor data
 
 
 enum State {
@@ -87,18 +92,22 @@ volatile uint16_t MANUAL_STEP_BACKWARDS_ = 1;
 volatile uint16_t MANUAL_STEP_FORWARD_ = 1;
 
 // Function Prototypes
-void STEPPER_CORRECTION(float measuredGap);               // Function to control the stepper motor
-uint16_t calculateGapWidth(uint16_t sensorData[]);        // Function to estimate the gap width in µm
-void blinkLED(int count);                                 // Function to blink LED
-void showData(uint16_t sensorData[]);                     // Function to show stored sensor data
-void initializeStepper();                                 // Initialize the stepper motor parameters
-void configureAndStartTimers();                           // Configure and start timers for Clock, ST, and SAVE pins
-void configureInterrupts();                               // Configure TRIGG_PIN, TRIGG_SAVE_PIN, and EOS_PIN interrupts
-void getS11108Data();                                     // function to get, filter and calculata the gap width
-void applyLowPassFilter(uint16_t sensorData[], uint16_t filteredData[]); // Function to apply a 2 order lowpass to data
-int ADNS9500Data();
+void STEPPER_CORRECTION(float measuredGap);          // Function to control the stepper motor
+void STEPingStepper(int value);                      // Function to send steps to stepper
+void blinkLED(int count);                            // Function to blink LED
+void initializeStepper();                            // Initialize the stepper motor parameters
+int ADNS9500Data();                                  // Function to fetch data from ADNS9500 sensor
 
-//Custom Command
+// S11108 related functions
+uint16_t calculateGapWidth(uint16_t sensorData[]);    // Function to calculate the gap width
+uint16_t showMeasuredGap();                           // Function to display the measured gap
+uint16_t GetGapWidth(uint16_t SensorData[]);          // Function to get and process the gap width data
+void configureAndStartTimers();                       // Function to configure and start timers
+void PinConfiguration();                              // Function to configure the pins
+
+
+ 
+//Custom Command raspi communication
 int parseValueFromCommand(String command);
 void executeCommand(String command, int parsedValue);
 void RaspiCommandHandeler();
@@ -121,197 +130,21 @@ int  GET_WIDTH_MEASURED(){calculateGapWidth(sensorData);return 1;}          //Pr
 
 
 void setup() {
-  Serial.begin(115200);                                                     // Initialize serial communication
-  while (!Serial && millis() < 5000);                                       // Wait for the serial port to open (for debugging)
-  delay(500);                                                               // Delay for stability
-  Serial.println(F("\nConfiguring PWM for Clock and ST Signals"));          // Print a message
-  SerialRaspiCommand.begin(9600);
-  initializeADNS9500();                                                     // Initialize USB Mouse & Calibration related pins and USB Host
-  initializeStepper();                                                      // Initialize the stepper motor parameters
-  configureAndStartTimers();                                                // Configure and start timers for Clock, ST, and SAVE pins
-  configureInterrupts();                                                    // Configure TRIGG_PIN, TRIGG_SAVE_PIN, and EOS_PIN interrupts
+Serial.begin(460800);                                                       // Initialize serial communication at a baud rate of 460800 and open the serial port (for debugging)
+while (!Serial && millis() < 5000);                                         // Wait for the serial port to open
+delay(500);                                                                 // Add a 500ms delay for stability
+Serial.println(F("\nConfiguring PWM for Clock and ST Signals"));            // Print a message to indicate PWM configuration
+SerialRaspiCommand.begin(9600);                                             // Initialize communication with a Raspberry Pi (assuming SerialRaspiCommand is used)
+initializeADNS9500();                                                       // Initialize USB Mouse & Calibration related pins and USB Host
+configureAndStartTimers();                                                  // Configure and start timers for Clock, ST, and SAVE pins
+PinConfiguration();                                                         // Configure TRIGG_PIN, TRIGG_SAVE_PIN, and EOS_PIN
 }
 
 void loop() {
-getS11108Data();  
+showMeasuredGap(); 
 }
 
- 
-// function to controll stepper motor feedback loop
-void STEPPER_CORRECTION(float measuredGap) {
-  if (STEPPER_CORRECTION_STATE) {
-    float error = SET_TARGET_GAP_WIDTH_ - measuredGap; // Calculate error using SET_TARGET_GAP_WIDTH
-    float proportionalControl = KP * error; // Calculate the proportional control component
-    integralError += KI * error; // Accumulate the integral error component
-    if (integralError > MAX_INTEGRAL) integralError = MAX_INTEGRAL; // Limit the integral component to prevent wind-up
-    else if (integralError < -MAX_INTEGRAL) integralError = -MAX_INTEGRAL;
-
-    // Adjust the following lines to use the tolerance macros
-    if (measuredGap - SET_TARGET_GAP_WIDTH_ > SET_GAP_FORWARD_TOLERANCE_)
-      stepper.move(-(proportionalControl + integralError)); // Gap is too large, stepper needs to make backward adjustments
-    else if (SET_TARGET_GAP_WIDTH_ - measuredGap > SET_GAP_BACKWARDS_TOLERANCE_)
-      stepper.move(proportionalControl + integralError);    // Gap is too small, stepper needs to make forward adjustments
-    else
-      stepper.move(proportionalControl + integralError);
-
-    while (stepper.isRunning()) stepper.run();              // Wait until the stepper motor has finished moving
-  }
-}
-
-//Function to step the stepper in both directions
-void STEPingStepper(int value) {
-  if (!STEPPER_CORRECTION_STATE) {
-  stepper.move(value);    
-  }
-}
-
-// Function to calculate the gap width between plastic flat strips
-uint16_t calculateGapWidth(uint16_t SensorData[]) {
-    // Initialize minVal and maxVal with the first element of the array
-    uint16_t minVal = SensorData[0];
-    uint16_t maxVal = SensorData[0];
-
-    // Calculate the minimum and maximum values in SensorData[]
-    for (int i = 0; i < NUM_PIXELS; i++) {
-        if (SensorData[i] < minVal) {
-            minVal = SensorData[i];
-        }
-        if (SensorData[i] > maxVal) {
-            maxVal = SensorData[i];
-        }
-    }
-
-
-
-    int highThreshold = maxVal - (maxVal - minVal) * thresholdPercentage / 100;
-    int lowThreshold = minVal + (maxVal - minVal) * thresholdPercentage / 100;
-
-    // Initialize variables for gap width calculation
-
-    bool firstRisingEdgeDetected = false; // Flag to track the first rising edge
-    int firstRisingEdgeIndex = 0; // Index of the first rising edge
-     int secondRisingEdgeIndex = 0; // Index of the first rising edge
-    int16_t startingPoint = 0;
-   // Minimum and maximum gap widths to consider as valid gaps
-    #define minValidGapWidth  71 // Minimum gap width in pixels
-    #define maxValidGapWidth 428 // Maximum gap width in pixels
-
-
-    // Iterate through SensorData
-    for (int i = 0; i < NUM_PIXELS; i++) {
-        if (!firstRisingEdgeDetected && SensorData[i] < lowThreshold && SensorData[i+1] > highThreshold) {
-            // First rising edge detected
-            firstRisingEdgeDetected = true;
-            firstRisingEdgeIndex = i;
-        };
-         if (firstRisingEdgeDetected && SensorData[i] < lowThreshold && SensorData[i+1] > highThreshold) {
-            // Second rising edge detected
-            secondRisingEdgeIndex = i;
-             startingPoint = secondRisingEdgeIndex - 100;
-
-        }
-    }
-           if(startingPoint == 0) return 0;
-
-    // Initialize variables to count low pixels to the left and right
-    int lowPixelsLeft = 0;
-    int lowPixelsRight = 0;
-
-    // Initialize flag to track if we have encountered the first high pixel
-    bool firstHighPixelEncountered = false;
-    // Iterate through SensorData starting from the middle
-    for (int i = startingPoint; i >= 0; i--) {
-        if (SensorData[i] > highThreshold) {
-            // High pixel value detected
-            firstHighPixelEncountered = true;
-            break; // Exit the loop
-        } else {
-            // Low pixel value detected
-            lowPixelsLeft++;
-        }
-    }
-
-    // Reset flag for the right side
-    firstHighPixelEncountered = false;
-
-    // Iterate through SensorData starting from the middle
-    for (int i = startingPoint + 1; i < NUM_PIXELS; i++) {
-        if (SensorData[i] > highThreshold) {
-            // High pixel value detected
-            firstHighPixelEncountered = true;
-            break; // Exit the loop
-        } else {
-            // Low pixel value detected
-            lowPixelsRight++;
-        }
-    }
-
-    // Calculate the gap width in micrometers (µm)
-    int pixelSize = 14; // 14 µm per pixel
-    int gapWidthMicrometers = (lowPixelsLeft + lowPixelsRight) * pixelSize;
-
-    return gapWidthMicrometers; // Return the gap width in µm
-}
-
-void blinkLED(int count) {
-  for (int i = 0; i < count; i++) {
-    digitalWrite(ledPin, HIGH);
-    delay(calibrationBlinkDuration);
-    digitalWrite(ledPin, LOW);
-    delay(calibrationBlinkDuration);
-  }
-}
-
-void showData(uint16_t sensorData[]) {
-  // Iterate through the sensorData array and print its elements
-  for (int i = 0; i < 2049; i++) {
-    Serial.println(sensorData[i]);
-  }
-}
-
-void initializeStepper() {
-  Serial.println("initializing Stepper...");  // Print a message
-  stepper.setMaxSpeed(1000.0);  // Set the maximum speed in steps per second
-  stepper.setAcceleration(500.0);  // Set the acceleration in steps per second^2
-  stepper.setCurrentPosition(0);  // Set the initial position to zero
-  Serial.println("initializing Stepper donne!!!!");  // Print a message
-}
-
-void configureAndStartTimers() {
-  Serial.println("Configuring timers...");  // Print a message
-  // Configure Clock pin
-  pinMode(CLOCK_PIN, OUTPUT);
-  analogWriteFrequency(CLOCK_PIN, 375000);  // Set the PWM frequency to 375 KHz on Pin Clock
-  analogWriteResolution(10);  // Set the analog write resolution to 10 bits (1024 levels)
-
-  // Configure ST pin
-  pinMode(ST_PIN, OUTPUT);
-  analogWriteFrequency(ST_PIN, 175);  // Set the PWM frequency to 175Hz on Pin ST
-  analogWriteResolution(10);  // Set the analog write resolution to 10 bits (1024 levels)
-
-  // Configure SAVE pin
-  pinMode(SAVE_PIN, OUTPUT);
-  analogWriteFrequency(SAVE_PIN, 175);  // Set the PWM frequency to 175Hz on Pin SAVE
-  analogWriteResolution(10);  // Set the analog write resolution to 10 bits (1024 levels)
-  Serial.println("Starting timers ST - CLOCK -SAVE");  // Print a message
-  
-  // Start Timers
-  analogWrite(ST_PIN, 999);  // Set a duty cycle of 95.7% on Pin ST
-  analogWrite(CLOCK_PIN, 512);  // Set a duty cycle of 50% on Pin Clock
-  analogWrite(SAVE_PIN, 999);  // Set a duty cycle of 99.81% on Pin SAVE
-}
-
-void configureInterrupts() {
-  Serial.println("Interrupt pin Configuration....");  // Print a message
-  // Configure TRIGG_PIN Pin
-  pinMode(TRIGG_PIN, INPUT_PULLUP);  // Configure TRIGG_PIN as INPUT with an internal pull-up resistor
-  
-  // Attach Save Pulse Interrupt
-  pinMode(TRIGG_SAVE_PIN, INPUT);  // Configure TRIGG_SAVE_PIN as INPUT
-  
-  // Attach EOS Pulse Interrupt
-  pinMode(EOS_PIN, INPUT);  // Configure EOS_PIN as INPUT
-  }
+/***********************************************************RASPI COMMUNICATION FUNCTIONS************************************************************************/
 // Function to parse the value from a command
 int parseValueFromCommand(String command) {
   int parsedValue = 0; // Default value if parsing fails
@@ -349,7 +182,7 @@ int parseValueFromCommand(String command) {
 
   return parsedValue;
 }
-
+// Function to execute command from Raspi
 void executeCommand(String command, int parsedValue) {
   //Serial.println(parsedValue);
   if (command.startsWith("ENABLE_STEPPER_CORRECTION")) {
@@ -427,7 +260,7 @@ void executeCommand(String command, int parsedValue) {
     Serial.println("Command not recognized");
   }
 }
-
+// Function RaspiCommandHandeler
 void RaspiCommandHandeler() {
   while (SerialRaspiCommand.available() > 0) {
     String command = SerialRaspiCommand.readStringUntil('\n');    // Read the command from Serial input
@@ -435,64 +268,188 @@ void RaspiCommandHandeler() {
     executeCommand(command, parsedValue);
   }
 }
-
-void getS11108Data(){
-  pixelCount =0;
- while(!digitalRead(TRIGG_SAVE_PIN)){
-  while(digitalRead(TRIGG_PIN)){
- ///Serial.print("video =");
- //Serial.println(analogRead(DATA_PIN));
- pixelCount++;
- if (pixelCount > 87 && pixelCount <= NUM_PIXELS + 87) {
-    sensorData[pixelCount - 88] = analogRead(DATA_PIN);
-    //Serial.println(sensorData[pixelCount - 88]);
-    
-  };
-   if (pixelCount > NUM_PIXELS + 87)break;
-   };break;
+/*******************************************************************STEPPER FUNCTIONS****************************************************************************/
+// function to INITIALIZE stepper 
+void initializeStepper() {
+  Serial.println("initializing Stepper...");  // Print a message
+  stepper.setMaxSpeed(1000.0);  // Set the maximum speed in steps per second
+  stepper.setAcceleration(500.0);  // Set the acceleration in steps per second^2
+  stepper.setCurrentPosition(0);  // Set the initial position to zero
+  Serial.println("initializing Stepper donne!!!!");  // Print a message
 }
- //showData(sensorData);
-applyLowPassFilter(sensorData, filteredData);
- gapWidth += calculateGapWidth(filteredData);
- sampling--;
-if(sampling == 0){//showData(filteredData);
- Serial.print("Estimated Gap Width: ");
- Serial.print((float)(gapWidth/DefaultSampling));
- Serial.println(" µm");
- gapWidth = 0;
- sampling = DefaultSampling;
- delay(100);}
-}
+// function to controll stepper motor feedback loop
+void STEPPER_CORRECTION(float measuredGap) {
+  if (STEPPER_CORRECTION_STATE) {
+    float error = SET_TARGET_GAP_WIDTH_ - measuredGap; // Calculate error using SET_TARGET_GAP_WIDTH
+    float proportionalControl = KP * error; // Calculate the proportional control component
+    integralError += KI * error; // Accumulate the integral error component
+    if (integralError > MAX_INTEGRAL) integralError = MAX_INTEGRAL; // Limit the integral component to prevent wind-up
+    else if (integralError < -MAX_INTEGRAL) integralError = -MAX_INTEGRAL;
 
-void applyLowPassFilter(uint16_t sensorData[], uint16_t filteredData[]) {
-  if (NUM_PIXELS == 0) {
-    // Handle the case of an empty array
-    return;
-  }
+    // Adjust the following lines to use the tolerance macros
+    if (measuredGap - SET_TARGET_GAP_WIDTH_ > SET_GAP_FORWARD_TOLERANCE_)
+      stepper.move(-(proportionalControl + integralError)); // Gap is too large, stepper needs to make backward adjustments
+    else if (SET_TARGET_GAP_WIDTH_ - measuredGap > SET_GAP_BACKWARDS_TOLERANCE_)
+      stepper.move(proportionalControl + integralError);    // Gap is too small, stepper needs to make forward adjustments
+    else
+      stepper.move(proportionalControl + integralError);
 
-  // Initialize the filtered data with the first element of the input data
-  filteredData[0] = sensorData[0];
-
-  // Initialize previous values for the filter
-  float prevFilteredData = sensorData[0];
-  float prev2FilteredData = sensorData[0];
-
-  // Apply the second-order low-pass filter
-  for (size_t i = 1; i < NUM_PIXELS; i++) {
-    float input = sensorData[i];
-
-    // Calculate the filtered value using the second-order low-pass filter formula
-    float filteredValue = alpha * input + (1 - alpha) * (2 * prevFilteredData - prev2FilteredData);
-
-    // Store the filtered value in the output array
-    filteredData[i] = static_cast<uint16_t>(filteredValue);
-
-    // Update previous values for the next iteration
-    prev2FilteredData = prevFilteredData;
-    prevFilteredData = filteredValue;
+    while (stepper.isRunning()) stepper.run();              // Wait until the stepper motor has finished moving
   }
 }
+//Function to step the stepper in both directions
+void STEPingStepper(int value) {
+  if (!STEPPER_CORRECTION_STATE) {
+  stepper.move(value);    
+  }
+}
+/*******************************************************************S11108 FUNCTIONS****************************************************************************/
+// Function to calculate the gap width between plastic flat strips
+uint16_t calculateGapWidth(uint16_t SensorData[]) {
+  // Initialize minVal and maxVal with the first element of the array
+  uint16_t minVal = SensorData[0];
+  uint16_t maxVal = SensorData[0];
 
+  // Calculate the minimum value in SensorData[]
+  for (int i = 0; i < NUM_PIXELS; i++) {
+    if (SensorData[i] < minVal) {
+      minVal = SensorData[i];
+    }
+  }
+
+  // Calculate the maximum value in SensorData[]
+  for (int i = 0; i < NUM_PIXELS; i++) {
+    if (SensorData[i] > maxVal) {
+      maxVal = SensorData[i];
+    }
+  }
+
+  // Calculate the thresholds based on a percentage of the range
+  int highThreshold = maxVal - (maxVal - minVal) * thresholdPercentage / 100;
+  int lowThreshold = minVal + (maxVal - minVal) * thresholdPercentage / 100;
+
+  discretData[0] = minVal;
+
+  // Iterate through SensorData to apply Schmitt trigger and store values
+  for (int i = 0; i < NUM_PIXELS; i++) {
+    // Apply Schmitt trigger logic
+    if (SensorData[i] > highThreshold) {
+      discretData[i] = maxVal; // Store maxVal for high region
+    } else if (SensorData[i] < lowThreshold) {
+      discretData[i] = minVal; // Store minVal for low region
+    } else {
+      // If not clearly high or low, keep the previous state
+      discretData[i] = discretData[i - 1];
+    }
+  }
+
+  // Iterate through SensorData to find edges and calculate gaps
+  uint8_t count = 0;
+  int gapCount = 0;
+
+  for (int j = 0; j < NUM_PIXELS; j++) {
+    if (discretData[j - 1] == maxVal && discretData[j] == minVal) {
+      count++;
+    }
+    count = count / 2;
+  }
+
+  if (!IsLonger) {
+    for (int i = 50; i < 800; i++) {
+      // Skip until the first maxVal is encountered
+      while (discretData[i] <= minVal && discretData[i] < maxVal) i++;
+
+      // Skip until the following minVal is encountered (inside the gap)
+      while (discretData[i] >= maxVal && discretData[i] > minVal) i++;
+
+      // Count minVal elements inside the gap
+      while (discretData[i] <= minVal && discretData[i] < maxVal) {
+        gapCount++;
+        i++;
+      }
+      return gapCount;
+    }
+  } else {
+    for (int i = 50; i < 800; i++) {
+      if (discretData[i - 1] >= maxVal && discretData[i] <= minVal) {
+        gapCount++;
+      }
+      return gapCount;
+    }
+  }
+}
+// Calculate the gap width and return it
+uint16_t GetGapWidth(uint16_t SensorData[]) {
+  uint16_t gap = calculateGapWidth(sensorData);
+  if (gap < 60 && gap > 3) {
+    PrevgapWidth = gap;
+    return (gap * 100);
+  } else {
+    return PrevgapWidth * 100;
+  }
+}
+// Function to display sensor data (not used in loop)
+uint16_t showMeasuredGap() {
+   
+  pixelCount = 0;
+  while (!digitalRead(EOS_PIN)) {
+    while (digitalRead(TRIGG_PIN)) {
+      pixelCount++;
+      if (pixelCount > 87 && pixelCount <= NUM_PIXELS + 87) {
+        sensorData[pixelCount - 88] = analogRead(DATA_PIN);
+      }
+      if (pixelCount > NUM_PIXELS + 87) {
+        goto out;
+      }
+    }
+  }
+out:;
+  
+  // Apply exponential filtering to the calculated gap width
+  ADCFilter.Filter(GetGapWidth(sensorData));
+  int bot1 = ADCFilter.Current();
+  ADCFilter1.Filter(bot1);
+
+  // Create a TimePlot object and send the filtered data
+  TimePlot Plot;
+  Plot.SendData("Gapwidth", ADCFilter1.Current() + steadyError);
+  delay(50);
+  return ADCFilter1.Current() + steadyError;
+
+}
+// Configure and start timers for Clock, ST, and SAVE pins
+void configureAndStartTimers() {
+  pinMode(CLOCK_PIN, OUTPUT);
+  analogWriteFrequency(CLOCK_PIN, 375000);
+  analogWriteResolution(10);
+
+  pinMode(ST_PIN, OUTPUT);
+  analogWriteFrequency(ST_PIN, 175);
+  analogWriteResolution(10);
+
+  pinMode(SAVE_PIN, OUTPUT);
+  analogWriteFrequency(SAVE_PIN, 175);
+  analogWriteResolution(10);
+
+  analogWrite(ST_PIN, 999);
+  analogWrite(CLOCK_PIN, 512);
+  analogWrite(SAVE_PIN, 999);
+}
+// Configure  pins
+void PinConfiguration() {
+  pinMode(TRIGG_PIN, INPUT_PULLUP);
+  pinMode(TRIGG_SAVE_PIN, INPUT);
+  pinMode(EOS_PIN, INPUT);
+}
+/********************************************************************ADNS-9500CTIONS****************************************************************************/
+void blinkLED(int count) {
+  for (int i = 0; i < count; i++) {
+    digitalWrite(ledPin, HIGH);
+    delay(calibrationBlinkDuration);
+    digitalWrite(ledPin, LOW);
+    delay(calibrationBlinkDuration);
+  }
+}
 int ADNS9500Data(){
   if(OPTICAL_LENGTH_MEASUREMENT_STATE) return getDistance();
   return 0;

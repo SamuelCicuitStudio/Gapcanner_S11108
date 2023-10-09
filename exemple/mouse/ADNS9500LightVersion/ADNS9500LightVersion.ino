@@ -55,10 +55,13 @@ unsigned long currTime;
 unsigned long timer;
 volatile int xydat[2];
 volatile byte movementflag=0;
-const int ncs = 10;
+
+#define ncs  10 
+#define MotionPin 0
+
 
 extern const unsigned short firmware_length;
-extern prog_uchar firmware_data[];
+extern const unsigned char firmware_data[];
 
 void setup() {
   Serial.begin(9600);

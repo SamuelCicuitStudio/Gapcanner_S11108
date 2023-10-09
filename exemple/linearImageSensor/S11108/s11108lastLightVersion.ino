@@ -1,247 +1,197 @@
 #include <Arduino.h>
+#include "MegunoLink.h"
+#include "Filter.h"
 
-// S11108 Pin  physical Connexion
-#define CLOCK_PIN       5                                 // Clock Signal PWM Pin (FlexPWM1.1_Channel_1)
-#define TRIGG_PIN       9                                 // Trigger Signal Pin
-#define ST_PIN          29                                // ST Signal PWM Pin (FlexPWM3.1_Channel_2)
-#define EOS_PIN         4                                 // EOS Signal Pin
-#define DATA_PIN        A0                                // Sensor Analog Output Pin
-#define BSW_PIN         GND                               // Connected to GND to set 2048 pixel reading
+// Exponential filters for data smoothing
+ExponentialFilter<long> ADCFilter(10, 0);
+ExponentialFilter<long> ADCFilter1(3, 0);
 
-#define SAVE_PIN        28                                // Save Signal PWM Pin (FlexPWM3.1_Channel_1),
+// Pin Definitions
+#define CLOCK_PIN       5     // Clock Signal PWM Pin (FlexPWM1.1_Channel_1)
+#define TRIGG_PIN       9     // Trigger Signal Pin
+#define ST_PIN          29    // ST Signal PWM Pin (FlexPWM3.1_Channel_2)
+#define EOS_PIN         4     // EOS Signal Pin
+#define DATA_PIN        A0    // Sensor Analog Output Pin
+#define SAVE_PIN        28    // Save Signal PWM Pin (FlexPWM3.1_Channel_1)
+#define TRIGG_SAVE_PIN  11    // Data Storage Trigger interrupt pin linked to SAVE_PIN physically
 
 // Constants Related to S11108
-#define NUM_PIXELS              2048                      // Number of pixels in the sensor
-#define PIXEL_SIZE              14.0                      // Pixel size in micrometers (14 μm)
+#define NUM_PIXELS      2048  // Number of pixels in the sensor
+#define PIXEL_SIZE      14.0  // Pixel size in micrometers (14 μm)
 
-uint16_t sensorData[NUM_PIXELS];                          // Sensor Data Array
+// Variables
+uint16_t pixelCount = 0;
+uint16_t PrevgapWidth = 0; 
 
-// Volatile variables
- uint16_t pixelCount = 0;                         // Count of pixels
- float gapWidth = 0;                              // Gap width
+// System parameters
+int thresholdPercentage = 30; // For example, 10% of the range
+bool IsLonger = false;        // Parameter to determine if the strip width is longer than the sensor width
+#define steadyError 50        // output error
 
-
-uint16_t minVal = 1024; // Initialize minVal with the maximum possible value
-uint16_t maxVal = 0;          // Initialize maxVal with 0
-#define thresholdPercentage  30 // For example, 10% of the range
-#define alpha  0.7  // Adjust this value as needed
-uint16_t filteredData[NUM_PIXELS];
-#define DefaultSampling 200
-uint8_t sampling = DefaultSampling;
+// Filtered data array
+uint16_t discretData[NUM_PIXELS];
+// Sensor Data Array
+uint16_t sensorData[NUM_PIXELS];
 
 // Function Prototypes
-uint16_t calculateGapWidth(uint16_t sensorData[]);        // Function to estimate the gap width in µm
-void showData(uint16_t sensorData[]);                     // Function to show stored sensor data
-void configureAndStartTimers();                           // Configure and start timers for Clock, ST, and SAVE pins
-void configureInterrupts();                               // Configure TRIGG_PIN, TRIGG_SAVE_PIN, and EOS_PIN interrupts
-void getS11108Data();
-void applyLowPassFilter(uint16_t sensorData[],uint16_t filteredData[]);
-
+uint16_t calculateGapWidth(uint16_t sensorData[]);
+uint16_t showMeasuredGap();
+uint16_t GetGapWidth(uint16_t SensorData[]);
+void configureAndStartTimers();
+void PinConfiguration();
 
 void setup() {
-  Serial.begin(115200);                                                     // Initialize serial communication
-  while (!Serial && millis() < 5000);                                       // Wait for the serial port to open (for debugging)
-  delay(500);                                                               // Delay for stability
-  //Serial.println("Configuring PWM for Clock and ST Signals");          // Print a message
-  configureAndStartTimers();                                                // Configure and start timers for Clock, ST, and SAVE pins
-  configureInterrupts();                                                    // Configure TRIGG_PIN, TRIGG_SAVE_PIN, and EOS_PIN interrupts
+  Serial.begin(460800);  // Initialize serial communication
+  while (!Serial && millis() < 5000); // Wait for the serial port to open (for debugging)
+  delay(5000); // Delay for stability  
+  configureAndStartTimers();  // Configure and start timers for Clock, ST, and SAVE pins
+  PinConfiguration();// Configure TRIGG_PIN, TRIGG_SAVE_PIN, and EOS_PIN 
 }
 
 void loop() {
- getS11108Data();
- delay(1000);
-}
+
+ showMeasuredGap();
+
+  }
 
 // Function to calculate the gap width between plastic flat strips
 uint16_t calculateGapWidth(uint16_t SensorData[]) {
-    // Initialize minVal and maxVal with the first element of the array
-    uint16_t minVal = SensorData[0];
-    uint16_t maxVal = SensorData[0];
+  // Initialize minVal and maxVal with the first element of the array
+  uint16_t minVal = SensorData[0];
+  uint16_t maxVal = SensorData[0];
 
-    // Calculate the minimum and maximum values in SensorData[]
-    for (int i = 0; i < NUM_PIXELS; i++) {
-        if (SensorData[i] < minVal) {
-            minVal = SensorData[i];
-        }
-        if (SensorData[i] > maxVal) {
-            maxVal = SensorData[i];
-        }
+  // Calculate the minimum value in SensorData[]
+  for (int i = 0; i < NUM_PIXELS; i++) {
+    if (SensorData[i] < minVal) {
+      minVal = SensorData[i];
     }
+  }
 
-
-
-    int highThreshold = maxVal - (maxVal - minVal) * thresholdPercentage / 100;
-    int lowThreshold = minVal + (maxVal - minVal) * thresholdPercentage / 100;
-
-    // Initialize variables for gap width calculation
-
-    bool firstRisingEdgeDetected = false; // Flag to track the first rising edge
-    int firstRisingEdgeIndex = 0; // Index of the first rising edge
-     int secondRisingEdgeIndex = 0; // Index of the first rising edge
-    int startingPoint=0;
-   // Minimum and maximum gap widths to consider as valid gaps
-    int minValidGapWidth = 71; // Minimum gap width in pixels
-    int maxValidGapWidth = 428; // Maximum gap width in pixels
-
-
-    // Iterate through SensorData
-    for (int i = 0; i < NUM_PIXELS; i++) {
-        if (!firstRisingEdgeDetected && SensorData[i] < lowThreshold && SensorData[i+1] > highThreshold) {
-            // First rising edge detected
-            firstRisingEdgeDetected = true;
-            firstRisingEdgeIndex = i;
-        };
-         if (firstRisingEdgeDetected && SensorData[i] < lowThreshold && SensorData[i+1] > highThreshold) {
-            // Second rising edge detected
-             secondRisingEdgeIndex = i;
-             startingPoint = secondRisingEdgeIndex - 100;
-             Serial.print("startingPoint:");
-             Serial.println(startingPoint);
-
-            
-        }
+  // Calculate the maximum value in SensorData[]
+  for (int i = 0; i < NUM_PIXELS; i++) {
+    if (SensorData[i] > maxVal) {
+      maxVal = SensorData[i];
     }
-          if(startingPoint == 0) return 0;
-    // Initialize variables to count low pixels to the left and right
-    int lowPixelsLeft = 0;
-    int lowPixelsRight = 0;
+  }
 
-    // Initialize flag to track if we have encountered the first high pixel
-    bool firstHighPixelEncountered = false;
-    // Iterate through SensorData starting from the middle
-    for (int i = startingPoint; i >= 0; i--) {
-        if (SensorData[i] > highThreshold) {
-            // High pixel value detected
-            firstHighPixelEncountered = true;
-            break; // Exit the loop
-        } else {
-            // Low pixel value detected
-            lowPixelsLeft++;
-        }
+  // Calculate the thresholds based on a percentage of the range
+  int highThreshold = maxVal - (maxVal - minVal) * thresholdPercentage / 100;
+  int lowThreshold = minVal + (maxVal - minVal) * thresholdPercentage / 100;
+
+  discretData[0] = minVal;
+
+  // Iterate through SensorData to apply Schmitt trigger and store values
+  for (int i = 0; i < NUM_PIXELS; i++) {
+    // Apply Schmitt trigger logic
+    if (SensorData[i] > highThreshold) {
+      discretData[i] = maxVal; // Store maxVal for high region
+    } else if (SensorData[i] < lowThreshold) {
+      discretData[i] = minVal; // Store minVal for low region
+    } else {
+      // If not clearly high or low, keep the previous state
+      discretData[i] = discretData[i - 1];
     }
+  }
 
-    // Reset flag for the right side
-    firstHighPixelEncountered = false;
+  // Iterate through SensorData to find edges and calculate gaps
+  uint8_t count = 0;
+  int gapCount = 0;
 
-    // Iterate through SensorData starting from the middle
-    for (int i = startingPoint + 1; i < NUM_PIXELS; i++) {
-        if (SensorData[i] > highThreshold) {
-            // High pixel value detected
-            firstHighPixelEncountered = true;
-            break; // Exit the loop
-        } else {
-            // Low pixel value detected
-            lowPixelsRight++;
-        }
+  for (int j = 0; j < NUM_PIXELS; j++) {
+    if (discretData[j - 1] == maxVal && discretData[j] == minVal) {
+      count++;
     }
+    count = count / 2;
+  }
 
-    // Calculate the gap width in micrometers (µm)
-    int pixelSize = 14; // 14 µm per pixel
-    int gapWidthMicrometers =( (lowPixelsLeft + lowPixelsRight) * pixelSize)-600;
+  if (!IsLonger) {
+    for (int i = 50; i < 800; i++) {
+      // Skip until the first maxVal is encountered
+      while (discretData[i] <= minVal && discretData[i] < maxVal) i++;
 
-    return gapWidthMicrometers; // Return the gap width in µm
-}
+      // Skip until the following minVal is encountered (inside the gap)
+      while (discretData[i] >= maxVal && discretData[i] > minVal) i++;
 
-void showData(uint16_t sensorData[]) {
-  for (int i = 0; i < 2049; i++) {
-    Serial.print("[");
-    Serial.print(sensorData[i]);
-    Serial.print("] ");
-
-    // Print a new line after every 100 values
-    if ((i + 1) % 100 == 0) {
-      Serial.println();
+      // Count minVal elements inside the gap
+      while (discretData[i] <= minVal && discretData[i] < maxVal) {
+        gapCount++;
+        i++;
+      }
+      return gapCount;
+    }
+  } else {
+    for (int i = 50; i < 800; i++) {
+      if (discretData[i - 1] >= maxVal && discretData[i] <= minVal) {
+        gapCount++;
+      }
+      return gapCount;
     }
   }
 }
 
-void configureAndStartTimers() {
-  //Serial.println("Configuring timers...");  // Print a message
-  // Configure Clock pin
-  pinMode(CLOCK_PIN, OUTPUT);
-  analogWriteFrequency(CLOCK_PIN, 375000);  // Set the PWM frequency to 375 KHz on Pin Clock
-  analogWriteResolution(10);  // Set the analog write resolution to 10 bits (1024 levels)
-
-  // Configure ST pin
-  pinMode(ST_PIN, OUTPUT);
-  analogWriteFrequency(ST_PIN, 175);  // Set the PWM frequency to 175Hz on Pin ST
-  analogWriteResolution(10);  // Set the analog write resolution to 10 bits (1024 levels)
-
-  // Configure SAVE pin
-  pinMode(SAVE_PIN, OUTPUT);
-  analogWriteFrequency(SAVE_PIN, 175);  // Set the PWM frequency to 175Hz on Pin SAVE
-  analogWriteResolution(10);  // Set the analog write resolution to 10 bits (1024 levels)
-  //Serial.println("Starting timers ST - CLOCK -SAVE");  // Print a message
-  
-  // Start Timers
-  analogWrite(ST_PIN, 999);  // Set a duty cycle of 95.7% on Pin ST
-  analogWrite(CLOCK_PIN, 512);  // Set a duty cycle of 50% on Pin Clock
-  analogWrite(SAVE_PIN, 999);  // Set a duty cycle of 99.81% on Pin SAVE
+// Calculate the gap width and return it
+uint16_t GetGapWidth(uint16_t SensorData[]) {
+  uint16_t gap = calculateGapWidth(sensorData);
+  if (gap < 60 && gap > 3) {
+    PrevgapWidth = gap;
+    return (gap * 100);
+  } else {
+    return PrevgapWidth * 100;
+  }
 }
 
-void configureInterrupts() {
-  //Serial.println("Interrupt pin Configuration....");  // Print a message
-  // Configure TRIGG_PIN Pin
-  pinMode(TRIGG_PIN, INPUT_PULLUP);  // Configure TRIGG_PIN as INPUT with an internal pull-up resistor
+// Function to display sensor data (not used in loop)
+uint16_t showMeasuredGap() {
    
-  // Attach EOS Pulse Interrupt
-  pinMode(EOS_PIN, INPUT);  // Configure EOS_PIN as INPUT
-  }
-
-void getS11108Data(){
-  pixelCount =0;
-  gapWidth=0;
-  while(!digitalRead(SAVE_PIN)){
-    while(digitalRead(TRIGG_PIN)){
-      ///Serial.print("video =");
-      //Serial.println(analogRead(DATA_PIN));
+  pixelCount = 0;
+  while (!digitalRead(EOS_PIN)) {
+    while (digitalRead(TRIGG_PIN)) {
       pixelCount++;
       if (pixelCount > 87 && pixelCount <= NUM_PIXELS + 87) {
         sensorData[pixelCount - 88] = analogRead(DATA_PIN);
-        //Serial.println(sensorData[pixelCount - 88]);
-        };
-      if (pixelCount > NUM_PIXELS + 87){ 
-        //showData(sensorData);
-        applyLowPassFilter(sensorData, filteredData);
-        gapWidth = calculateGapWidth(filteredData);
-        if(gapWidth>0){
-          Serial.print("Estimated Gap Width: ");
-          Serial.print(gapWidth);
-          Serial.println(" µm");
-        } ;break;
       }
-    };break;
+      if (pixelCount > NUM_PIXELS + 87) {
+        goto out;
+      }
+    }
   }
+out:;
+  
+  // Apply exponential filtering to the calculated gap width
+  ADCFilter.Filter(GetGapWidth(sensorData));
+  int bot1 = ADCFilter.Current();
+  ADCFilter1.Filter(bot1);
+
+  // Create a TimePlot object and send the filtered data
+  TimePlot Plot;
+  Plot.SendData("Gapwidth", ADCFilter1.Current() + steadyError);
+  delay(50);
+  return ADCFilter1.Current() + steadyError;
 
 }
 
-void applyLowPassFilter(uint16_t sensorData[], uint16_t filteredData[]) {
-  if (NUM_PIXELS == 0) {
-    // Handle the case of an empty array
-    return;
-  }
+// Configure and start timers for Clock, ST, and SAVE pins
+void configureAndStartTimers() {
+  pinMode(CLOCK_PIN, OUTPUT);
+  analogWriteFrequency(CLOCK_PIN, 375000);
+  analogWriteResolution(10);
 
-  // Initialize the filtered data with the first element of the input data
-  filteredData[0] = sensorData[0];
+  pinMode(ST_PIN, OUTPUT);
+  analogWriteFrequency(ST_PIN, 175);
+  analogWriteResolution(10);
 
-  // Initialize previous values for the filter
-  float prevFilteredData = sensorData[0];
-  float prev2FilteredData = sensorData[0];
+  pinMode(SAVE_PIN, OUTPUT);
+  analogWriteFrequency(SAVE_PIN, 175);
+  analogWriteResolution(10);
 
-  // Apply the second-order low-pass filter
-  for (size_t i = 1; i < NUM_PIXELS; i++) {
-    float input = sensorData[i];
-
-    // Calculate the filtered value using the second-order low-pass filter formula
-    float filteredValue = alpha * input + (1 - alpha) * (2 * prevFilteredData - prev2FilteredData);
-
-    // Store the filtered value in the output array
-    filteredData[i] = static_cast<uint16_t>(filteredValue);
-
-    // Update previous values for the next iteration
-    prev2FilteredData = prevFilteredData;
-    prevFilteredData = filteredValue;
-  }
+  analogWrite(ST_PIN, 999);
+  analogWrite(CLOCK_PIN, 512);
+  analogWrite(SAVE_PIN, 999);
 }
 
-
+// Configure  pins
+void PinConfiguration() {
+  pinMode(TRIGG_PIN, INPUT_PULLUP);
+  pinMode(TRIGG_SAVE_PIN, INPUT);
+  pinMode(EOS_PIN, INPUT);
+}
