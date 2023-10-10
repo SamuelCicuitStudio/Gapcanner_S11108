@@ -16,8 +16,8 @@ ExponentialFilter<long> ADCFilter1(3, 0);
 
 
 // Define constants
-#define NUM_PIXELS 3648
-#define PIXELSIZE 8 // Pixel size in µm (micrometers)
+#define NUM_PIXELS 1546
+#define PIXELSIZE 5.5 // Pixel size in µm (micrometers)
 
 uint16_t PrevgapWidth = 0; 
 
@@ -68,17 +68,17 @@ void TCD1304Init(){
  
 
  pinMode(TCD_ADC_Trigger,OUTPUT);
- analogWriteFrequency(TCD_ADC_Trigger,500000);      // Set the PWM frequency to 500kHz on  to trigger ADC conversion
+ analogWriteFrequency(TCD_ADC_Trigger,1000000);      // Set the PWM frequency to 1MHz on  to trigger ADC conversion
  analogWriteResolution(8);                          // Set the analog write resolution to 8 bits (256 levels)
 
 
  pinMode(TCD_ICG,OUTPUT);
- analogWriteFrequency(TCD_ICG,133);                 // Set the PWM frequency to 133Hz on  for ICG
+ analogWriteFrequency(TCD_ICG,133);                 // Set the PWM frequency to 133Hz on  to trigger ADC conversion
  analogWriteResolution(15);                         // Set the analog write resolution to 15 bits (32768 levels)
 
 //20µs integration time
  pinMode(TCD_SH,OUTPUT);
- analogWriteFrequency(TCD_SH,50000);                 // Set the PWM frequency to 50kHz for SH
+ analogWriteFrequency(TCD_SH,50000);                 // Set the PWM frequency to 50kHz on  to trigger ADC conversion
  analogWriteResolution(11);                          // Set the analog write resolution to 11 bits (2048 levels)
 
  
@@ -88,7 +88,7 @@ void TCD1304Clk(){
  analogWrite(TCD_CLK, 32);                           // Set a duty cycle of 50%
  analogWrite(TCD_ADC_Trigger,64);                    // Set a duty cycle of 25% 
  analogWrite(TCD_ICG,4369);                          // Set a duty cycle of 0.133% 
- delayNanoseconds(500);                              // delay between ICG and SH 500ns
+ delayNanoseconds(500);
  analogWrite(TCD_SH, 410);                           // Set a duty cycle of 20% 
 }
 
@@ -206,6 +206,7 @@ pixelCount =0;
         };
       if (pixelCount > NUM_PIXELS + 32){ 
         //showData(sensorData);
+        // Apply exponential filtering to the calculated gap width
       ADCFilter.Filter(GetGapWidth(CCDPixelBuffer));
       int bot1 = ADCFilter.Current();
       ADCFilter1.Filter(bot1);
